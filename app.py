@@ -231,13 +231,15 @@ def render_reports() -> dict:
         for report in st.session_state.question_reports:
             with st.expander(f"Question {report['question_id']} - {report['observation_label']}", expanded=True):
                 st.write(report["question_text"])
-                st.write(report["summary"])
+                st.write(report["short_summary"])
+                st.caption(report["recruiter_recommendation"])
                 st.json(report["metrics"])
 
     final_report = build_final_report(CANDIDATE_CONTEXT, st.session_state.question_reports)
     if len(st.session_state.question_reports) == len(QUESTIONS):
         st.success(f"Final observation label: {final_report['overall_summary']['observation_label']}")
-        st.write(final_report["overall_summary"]["summary"])
+        st.write(final_report["overall_summary"]["short_summary"])
+        st.caption(final_report["overall_summary"]["recruiter_recommendation"])
     else:
         st.info("Final report will be complete after all questions have been answered and stopped.")
 
