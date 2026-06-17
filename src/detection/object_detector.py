@@ -17,8 +17,8 @@ COCO_CLASS_IDS = {
 @dataclass(frozen=True)
 class ObjectDetectionConfig:
     model_name: str = "yolov8n.pt"
-    image_size: int = 416
-    confidence: float = 0.35
+    image_size: int = 640
+    confidence: float = 0.25
 
 
 class ObjectDetector:

@@ -20,31 +20,41 @@ class WebcamCapture:
         if self.capture is not None and self.capture.isOpened():
             return True, None
 
-        capture = cv2.VideoCapture(self.camera_index)
+        capture = cv2.VideoCapture(self.camera_index, cv2.CAP_DSHOW)
         capture.set(cv2.CAP_PROP_FRAME_WIDTH, self.width)
         capture.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
+        capture.set(cv2.CAP_PROP_BUFFERSIZE, 1)
         if not capture.isOpened():
             capture.release()
             return False, "Unable to open webcam. Check camera permission or another app using the camera."
 
         self.capture = capture
+        self._warm_up()
         return True, None
 
-    def read(self) -> tuple[bool, np.ndarray | None, str | None]:
+    def read(self, retries: int = 3) -> tuple[bool, np.ndarray | None, str | None]:
         ok, error = self.start()
         if not ok:
             return False, None, error
 
         assert self.capture is not None
-        ok, frame = self.capture.read()
-        if not ok:
-            return False, None, "Unable to read from webcam. Check camera permission or another app using the camera."
-        return True, frame, None
+        for _ in range(max(retries, 1)):
+            ok, frame = self.capture.read()
+            if ok and frame is not None:
+                return True, frame, None
+            time.sleep(0.03)
+        return False, None, "Unable to read from webcam. Keeping the last available frame."
 
     def stop(self) -> None:
         if self.capture is not None:
             self.capture.release()
             self.capture = None
+
+    def _warm_up(self) -> None:
+        assert self.capture is not None
+        for _ in range(3):
+            self.capture.read()
+            time.sleep(0.03)
 
 
 class FrameAnalyzer:

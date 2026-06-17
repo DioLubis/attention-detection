@@ -27,6 +27,7 @@ def init_state() -> None:
         "current_frame_results": None,
         "question_reports": [],
         "last_status": None,
+        "last_frame_rgb": None,
         "capture_error": None,
     }
     for key, value in defaults.items():
@@ -96,6 +97,7 @@ def reset_session() -> None:
     st.session_state.current_frame_results = None
     st.session_state.question_reports = []
     st.session_state.last_status = None
+    st.session_state.last_frame_rgb = None
     st.session_state.capture_error = None
     st.session_state.session_id = str(uuid.uuid4())
     st.session_state.session_created_at = datetime.now(timezone.utc).isoformat()
@@ -144,6 +146,7 @@ def render_controls() -> None:
 def render_live_session() -> None:
     video_slot = st.empty()
     status_slot = st.empty()
+    warning_slot = st.empty()
 
     if not st.session_state.running:
         st.caption("Webcam activates after Start Question is selected. Raw video is processed in memory only.")
@@ -151,21 +154,39 @@ def render_live_session() -> None:
 
     webcam = get_webcam()
     analyzer = get_analyzer()
-    ok, frame, error = webcam.read()
-    if not ok:
-        st.session_state.capture_error = error
-        st.error(st.session_state.capture_error)
-        return
+    rendered_any_frame = False
 
-    analyzed_frame, status = analyzer.analyze(frame)
-    st.session_state.last_status = status
-    st.session_state.current_frame_results.append(status)
+    # Process a small burst per Streamlit rerun. This avoids full-page flicker
+    # on every single frame while keeping the Stop button responsive enough.
+    for _ in range(3):
+        ok, frame, error = webcam.read()
+        if not ok:
+            st.session_state.capture_error = error
+            if st.session_state.last_frame_rgb is not None:
+                warning_slot.warning(error)
+                video_slot.image(st.session_state.last_frame_rgb, channels="RGB", use_column_width=True)
+            else:
+                warning_slot.error(error)
+            time.sleep(0.08)
+            continue
 
-    video_slot.image(cv2.cvtColor(analyzed_frame, cv2.COLOR_BGR2RGB), channels="RGB", use_column_width=True)
-    with status_slot.container():
-        render_detection_panel(status)
+        analyzed_frame, status = analyzer.analyze(frame)
+        frame_rgb = cv2.cvtColor(analyzed_frame, cv2.COLOR_BGR2RGB)
+        st.session_state.last_frame_rgb = frame_rgb
+        st.session_state.last_status = status
+        st.session_state.current_frame_results.append(status)
+        rendered_any_frame = True
 
-    time.sleep(0.12)
+        warning_slot.empty()
+        video_slot.image(frame_rgb, channels="RGB", use_column_width=True)
+        with status_slot.container():
+            render_detection_panel(status)
+        time.sleep(0.05)
+
+    if not rendered_any_frame and st.session_state.last_status is not None:
+        with status_slot.container():
+            render_detection_panel(st.session_state.last_status)
+
     st.rerun()
 
 
