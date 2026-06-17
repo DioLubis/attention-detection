@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from sentiment import build_interview_sentiment, build_question_sentiment, classify_observation
+from src.processing.sentiment import build_interview_sentiment, build_question_sentiment, classify_observation
 
 
 def metrics(**overrides):

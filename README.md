@@ -1,34 +1,103 @@
 # Karierly Interview Vision
 
-Standalone Streamlit prototype for ATS interview observation. The app shows hardcoded technical interview questions, activates a webcam during each answer, summarizes visual context, and exports a recruiter-friendly JSON report.
+Standalone Streamlit prototype for ATS interview observation. The app shows hardcoded interview questions, activates the webcam while a candidate answers, summarizes visual context, and exports a recruiter-friendly JSON report.
 
-This prototype does not decide whether a candidate is accepted or rejected. It does not infer honesty, personality, intelligence, confidence, or hiring suitability.
+The prototype is an observation aid only. It does not determine candidate suitability, does not infer honesty or personality, and does not produce an automatic hiring decision.
+
+## Folder Structure
+
+```text
+karierly-interview-vision/
+  app.py
+  requirements.txt
+  README.md
+  data/
+    questions.json
+  reports/
+    .gitkeep
+    sample_interview_observation.json
+  src/
+    detection/
+      object_detector.py
+      gaze_estimator.py
+      webcam.py
+    processing/
+      metrics.py
+      sentiment.py
+      report_generator.py
+    utils/
+      config.py
+      helpers.py
+```
 
 ## Features
 
-- Candidate and job context
+- Mock candidate and job context
 - One-question-at-a-time interview flow
-- Webcam-based frame analysis
-- Face visibility status
-- Person count and multiple-person status
-- Approximate camera focus / looking-away status
-- Approximate looking-left, looking-right, and looking-down status
-- Phone, laptop, and book indicators when YOLO is available
-- Question-level observation summaries
-- Final interview observation report
-- JSON export
+- Safe webcam start/stop controls
+- YOLO object detection for person, cell phone, laptop, and book when available
+- MediaPipe Face Mesh gaze/head approximation when available
+- OpenCV face fallback when YOLO or MediaPipe cannot load
+- Question-level metrics aggregation
+- Neutral HR-friendly observation labels
+- JSON report download and local save to `reports/`
+- No raw video, raw images, or biometric templates are stored
 
-## Setup
+## Setup From Fresh Clone
 
 ```powershell
+cd karierly-interview-vision
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
 pip install -r requirements.txt
 streamlit run app.py
 ```
 
-If `ultralytics` or `mediapipe` cannot run on the machine, the app still attempts basic OpenCV face-based fallback detection. Gaze/head direction is an approximation based on webcam-visible landmarks, not perfect eye tracking.
+Open the local URL shown by Streamlit, usually:
 
-## Privacy
+```text
+http://localhost:8501
+```
 
-Raw video and raw images are not stored by default. The exported report contains summarized metrics only.
+## Usage
+
+1. Review the candidate and job context.
+2. Click `Start Question` to activate the webcam for the current question.
+3. Click `Stop Question` when the answer is finished.
+4. Click `Next Question` and repeat.
+5. Review the observation report.
+6. Download the JSON report or save it locally to `reports/`.
+
+## Report Output
+
+Generated reports use this filename format:
+
+```text
+reports/interview_observation_<session_id>.json
+```
+
+The report contains only:
+
+- session metadata
+- mock candidate/job data
+- interview questions
+- summarized visual metrics
+- generated observation text
+- ethical disclaimers
+
+It does not contain raw video, raw images, screenshots, embeddings, face templates, or biometric templates.
+
+## Detection Notes
+
+YOLO and MediaPipe are used when installed and available. If they fail to load, the app still runs with a simpler OpenCV face fallback. Gaze/head direction is an approximation based on webcam-visible landmarks and should be reviewed by a human recruiter in context.
+
+## Tests
+
+```powershell
+python -m unittest test_metrics.py test_sentiment.py test_report_export.py
+```
+
+## Ethics
+
+This prototype must not be used to accept or reject candidates automatically. It provides visual interview observation only and requires human-in-the-loop recruiter review.

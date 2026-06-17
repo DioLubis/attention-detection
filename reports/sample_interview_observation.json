@@ -1,0 +1,60 @@
+{
+  "session_id": "sample-session",
+  "created_at": "2026-06-17T10:00:00+00:00",
+  "prototype_name": "Karierly Interview Vision",
+  "candidate": {
+    "name": "Dio Febriansyah Lubis",
+    "position": "Frontend Developer"
+  },
+  "job": {
+    "title": "Frontend Developer",
+    "department": "Engineering",
+    "interview_type": "Technical Interview"
+  },
+  "interview_questions": [
+    "Tell us about your experience building web applications using ReactJS.",
+    "How do you handle tight deadlines in a software development project?",
+    "Can you explain a technical challenge you faced and how you solved it?",
+    "How do you collaborate with backend engineers during API integration?",
+    "Why are you interested in this position?"
+  ],
+  "questions": [
+    {
+      "question_id": 1,
+      "question_text": "Tell us about your experience building web applications using ReactJS.",
+      "duration_seconds": 45.2,
+      "metrics": {
+        "face_visible_percentage": 92.4,
+        "person_visible_percentage": 100.0,
+        "looking_at_camera_percentage": 68.1,
+        "looking_away_percentage": 31.9,
+        "looking_left_percentage": 8.2,
+        "looking_right_percentage": 11.2,
+        "looking_down_percentage": 12.5,
+        "phone_detected_percentage": 0.0,
+        "laptop_detected_percentage": 16.0,
+        "book_detected_percentage": 0.0,
+        "multiple_persons_percentage": 0.0,
+        "unstable_frame_percentage": 0.0
+      },
+      "observation": {
+        "label": "Light Review Needed",
+        "summary": "The candidate was visually present for most of the answer, but looked away from the camera several times.",
+        "recommendation": "The recruiter may review this answer segment if additional context is needed.",
+        "disclaimer": "This observation is only a visual support indicator and must not be used as an automatic hiring decision. A human recruiter must review the answer and surrounding interview context."
+      }
+    }
+  ],
+  "final_summary": {
+    "overall_label": "Light Review Needed",
+    "summary": "Across the completed questions, most segments were usable, with some visual indicators that may benefit from light recruiter review.",
+    "recommended_action": "Recruiter should review flagged segments with interview notes before interpreting the observation."
+  },
+  "global_disclaimer": "This prototype does not determine candidate suitability. It only provides visual interview observation to support human recruiter review.",
+  "privacy": {
+    "raw_video_saved": false,
+    "raw_images_saved": false,
+    "biometric_templates_saved": false,
+    "stored_data": "summarized_metrics_and_generated_observation_text_only"
+  }
+}

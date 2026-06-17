@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from metrics import build_question_metrics_summary
+from src.processing.metrics import build_question_metrics_summary
 
 
 class MetricsAggregationTest(unittest.TestCase):

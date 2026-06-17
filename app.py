@@ -2,19 +2,21 @@ from __future__ import annotations
 
 import json
 import time
+import uuid
 from datetime import datetime, timezone
-from pathlib import Path
 
 import cv2
 import streamlit as st
 
-from config import CANDIDATE_CONTEXT, QUESTIONS
-from reporting import build_final_report, build_question_summary
-from vision import FrameAnalyzer
-
-
-APP_TITLE = "Karierly Interview Vision"
-EXPORT_DIR = Path("exports")
+from src.detection.webcam import FrameAnalyzer, WebcamCapture
+from src.processing.report_generator import (
+    build_export_report,
+    build_internal_report,
+    build_question_report,
+    save_export_report,
+)
+from src.utils.config import APP_TITLE, CANDIDATE_CONTEXT, QUESTIONS_PATH
+from src.utils.helpers import load_json, percentage
 
 
 def init_state() -> None:
@@ -30,6 +32,15 @@ def init_state() -> None:
     for key, value in defaults.items():
         if key not in st.session_state:
             st.session_state[key] = value
+    if "session_id" not in st.session_state:
+        st.session_state.session_id = str(uuid.uuid4())
+    if "session_created_at" not in st.session_state:
+        st.session_state.session_created_at = datetime.now(timezone.utc).isoformat()
+
+
+@st.cache_data(show_spinner=False)
+def get_questions() -> list[str]:
+    return load_json(QUESTIONS_PATH)
 
 
 @st.cache_resource(show_spinner=False)
@@ -38,15 +49,12 @@ def get_analyzer() -> FrameAnalyzer:
 
 
 @st.cache_resource(show_spinner=False)
-def get_camera() -> cv2.VideoCapture:
-    camera = cv2.VideoCapture(0)
-    camera.set(cv2.CAP_PROP_FRAME_WIDTH, 960)
-    camera.set(cv2.CAP_PROP_FRAME_HEIGHT, 540)
-    return camera
+def get_webcam() -> WebcamCapture:
+    return WebcamCapture()
 
 
 def start_question() -> None:
-    if st.session_state.question_index >= len(QUESTIONS):
+    if st.session_state.question_index >= len(get_questions()):
         return
     st.session_state.running = True
     st.session_state.current_started_at = datetime.now(timezone.utc).isoformat()
@@ -58,8 +66,8 @@ def stop_question() -> None:
     if not st.session_state.running or st.session_state.current_frame_results is None:
         return
 
-    question = QUESTIONS[st.session_state.question_index]
-    report = build_question_summary(
+    question = get_questions()[st.session_state.question_index]
+    report = build_question_report(
         question_id=st.session_state.question_index + 1,
         question_text=question,
         started_at=st.session_state.current_started_at,
@@ -70,16 +78,18 @@ def stop_question() -> None:
     st.session_state.running = False
     st.session_state.current_started_at = None
     st.session_state.current_frame_results = None
+    get_webcam().stop()
 
 
 def next_question() -> None:
     if st.session_state.running:
         stop_question()
-    if st.session_state.question_index < len(QUESTIONS) - 1:
+    if st.session_state.question_index < len(get_questions()) - 1:
         st.session_state.question_index += 1
 
 
 def reset_session() -> None:
+    get_webcam().stop()
     st.session_state.question_index = 0
     st.session_state.running = False
     st.session_state.current_started_at = None
@@ -87,12 +97,8 @@ def reset_session() -> None:
     st.session_state.question_reports = []
     st.session_state.last_status = None
     st.session_state.capture_error = None
-
-
-def percentage(frame_results: list[dict], key: str) -> float:
-    if not frame_results:
-        return 0.0
-    return sum(1 for frame in frame_results if frame.get(key)) / len(frame_results)
+    st.session_state.session_id = str(uuid.uuid4())
+    st.session_state.session_created_at = datetime.now(timezone.utc).isoformat()
 
 
 def status_pill(label: str, active: bool, good_when_active: bool = True) -> None:
@@ -113,7 +119,7 @@ def render_context() -> None:
 
 def render_questions() -> None:
     st.subheader("2. Hardcoded Interview Questions")
-    for index, question in enumerate(QUESTIONS, start=1):
+    for index, question in enumerate(get_questions(), start=1):
         marker = "Current" if index - 1 == st.session_state.question_index else f"Question {index}"
         st.write(f"**{marker}:** {question}")
 
@@ -121,7 +127,8 @@ def render_questions() -> None:
 def render_controls() -> None:
     st.subheader("3. Live Webcam Interview Session")
     current_number = st.session_state.question_index + 1
-    st.info(f"Question {current_number} of {len(QUESTIONS)}: {QUESTIONS[st.session_state.question_index]}")
+    questions = get_questions()
+    st.info(f"Question {current_number} of {len(questions)}: {questions[st.session_state.question_index]}")
 
     col1, col2, col3, col4 = st.columns(4)
     col1.button("Start Question", on_click=start_question, disabled=st.session_state.running)
@@ -129,7 +136,7 @@ def render_controls() -> None:
     col3.button(
         "Next Question",
         on_click=next_question,
-        disabled=st.session_state.running or st.session_state.question_index >= len(QUESTIONS) - 1,
+        disabled=st.session_state.running or st.session_state.question_index >= len(questions) - 1,
     )
     col4.button("Reset Session", on_click=reset_session)
 
@@ -142,16 +149,11 @@ def render_live_session() -> None:
         st.caption("Webcam activates after Start Question is selected. Raw video is processed in memory only.")
         return
 
-    camera = get_camera()
+    webcam = get_webcam()
     analyzer = get_analyzer()
-    if not camera.isOpened():
-        st.session_state.capture_error = "Unable to open webcam. Check camera permission or another app using the camera."
-        st.error(st.session_state.capture_error)
-        return
-
-    ok, frame = camera.read()
+    ok, frame, error = webcam.read()
     if not ok:
-        st.session_state.capture_error = "Unable to read from webcam. Check camera permission or another app using the camera."
+        st.session_state.capture_error = error
         st.error(st.session_state.capture_error)
         return
 
@@ -235,8 +237,8 @@ def render_reports() -> dict:
                 st.caption(report["recruiter_recommendation"])
                 st.json(report["metrics"])
 
-    final_report = build_final_report(CANDIDATE_CONTEXT, st.session_state.question_reports)
-    if len(st.session_state.question_reports) == len(QUESTIONS):
+    final_report = build_internal_report(CANDIDATE_CONTEXT, st.session_state.question_reports)
+    if len(st.session_state.question_reports) == len(get_questions()):
         st.success(f"Final observation label: {final_report['overall_summary']['observation_label']}")
         st.write(final_report["overall_summary"]["short_summary"])
         st.caption(final_report["overall_summary"]["recruiter_recommendation"])
@@ -246,21 +248,26 @@ def render_reports() -> dict:
     return final_report
 
 
-def render_export(final_report: dict) -> None:
+def render_export() -> None:
     st.subheader("6. Export Report")
-    report_json = json.dumps(final_report, indent=2)
+    export_report = build_export_report(
+        CANDIDATE_CONTEXT,
+        get_questions(),
+        st.session_state.question_reports,
+        session_id=st.session_state.session_id,
+        created_at=st.session_state.session_created_at,
+    )
+    report_json = json.dumps(export_report, indent=2, ensure_ascii=False)
     st.download_button(
         "Download JSON Report",
         data=report_json,
-        file_name="karierly_interview_vision_report.json",
+        file_name=f"interview_observation_{export_report['session_id']}.json",
         mime="application/json",
         disabled=not st.session_state.question_reports,
     )
 
-    if st.button("Save JSON to exports folder", disabled=not st.session_state.question_reports):
-        EXPORT_DIR.mkdir(exist_ok=True)
-        filename = EXPORT_DIR / f"karierly_interview_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
-        filename.write_text(report_json, encoding="utf-8")
+    if st.button("Save JSON to reports folder", disabled=not st.session_state.question_reports):
+        filename = save_export_report(export_report)
         st.success(f"Saved report to {filename}")
 
 
@@ -281,8 +288,8 @@ def main() -> None:
     render_questions()
     render_controls()
     render_live_session()
-    final_report = render_reports()
-    render_export(final_report)
+    render_reports()
+    render_export()
 
 
 if __name__ == "__main__":

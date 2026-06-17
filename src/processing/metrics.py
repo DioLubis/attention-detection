@@ -27,7 +27,6 @@ def build_question_metrics_summary(
     started_at: str | None = None,
     stopped_at: str | None = None,
 ) -> dict[str, Any]:
-    """Build a UI-independent question-level metrics summary."""
     aggregate = aggregate_frame_results(frame_results, started_at=started_at, stopped_at=stopped_at)
     return {
         "question_id": question_id,
@@ -43,11 +42,6 @@ def aggregate_frame_results(
     started_at: str | None = None,
     stopped_at: str | None = None,
 ) -> dict[str, Any]:
-    """Aggregate per-frame detection results into percentages.
-
-    Percentages are rounded to two decimals. Empty frame lists are safe and
-    return zero duration, zero frames, and zero-valued percentages.
-    """
     total_frames = len(frame_results)
     if total_frames == 0:
         return {
@@ -60,7 +54,7 @@ def aggregate_frame_results(
     for frame in frame_results:
         person_count = int(frame.get("person_count") or 0)
         face_visible = bool(frame.get("face_visible"))
-        person_visible = person_count > 0 or bool(frame.get("person_detected"))
+        person_visible = person_count > 0
         multiple_persons = person_count > 1 or bool(frame.get("multiple_persons"))
 
         counts["face_visible"] += int(face_visible)
@@ -79,10 +73,7 @@ def aggregate_frame_results(
     return {
         "total_duration_seconds": calculate_duration_seconds(frame_results, started_at, stopped_at),
         "total_frames": total_frames,
-        "metrics": {
-            f"{field}_percentage": _percentage(count, total_frames)
-            for field, count in counts.items()
-        },
+        "metrics": {f"{field}_percentage": _percentage(count, total_frames) for field, count in counts.items()},
     }
 
 
@@ -91,7 +82,6 @@ def calculate_duration_seconds(
     started_at: str | None = None,
     stopped_at: str | None = None,
 ) -> float:
-    """Calculate duration from frame timestamps, falling back to session bounds."""
     timestamps = [
         float(frame["timestamp"])
         for frame in frame_results

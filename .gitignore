@@ -216,3 +216,8 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Karierly Interview Vision generated reports
+reports/interview_observation_*.json
+!reports/sample_interview_observation.json
+!reports/.gitkeep
