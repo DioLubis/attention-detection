@@ -221,3 +221,6 @@ __marimo__/
 reports/interview_observation_*.json
 !reports/sample_interview_observation.json
 !reports/.gitkeep
+
+# Downloaded local model weights
+yolov8n.pt

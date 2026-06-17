@@ -61,7 +61,7 @@ class FrameAnalyzer:
 
         person_count = object_status["person_count"]
         if not self.object_detector.available and gaze_status["face_visible"]:
-            person_count = 1
+            person_count = max(int(gaze_status.get("face_count", 1)), 1)
 
         status = {
             "timestamp": time.time(),
@@ -77,6 +77,8 @@ class FrameAnalyzer:
             "laptop_detected": object_status["laptop_detected"],
             "book_detected": object_status["book_detected"],
             "multiple_persons": person_count > 1,
+            "detector_mode": "yolo" if self.object_detector.available else "opencv_fallback",
+            "eyes_visible": gaze_status.get("eyes_visible", False),
         }
         _draw_status(display, status)
         return display, status

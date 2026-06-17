@@ -23,6 +23,7 @@ class GazeEstimator:
         self.config = config or GazeConfig()
         self.face_mesh = self._load_face_mesh()
         self.face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
+        self.eye_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_eye_tree_eyeglasses.xml")
 
     def estimate(self, frame: np.ndarray) -> dict:
         if self.face_mesh is not None:
@@ -52,6 +53,8 @@ class GazeEstimator:
             "looking_right": False,
             "looking_down": False,
             "looking_away": True,
+            "face_count": 0,
+            "eyes_visible": False,
         }
 
     def _estimate_with_facemesh(self, frame: np.ndarray) -> dict:
@@ -61,7 +64,8 @@ class GazeEstimator:
             return self._empty_status()
 
         height, width = frame.shape[:2]
-        landmarks = results.multi_face_landmarks[0].landmark
+        all_faces = results.multi_face_landmarks
+        landmarks = all_faces[0].landmark
         xs = [point.x for point in landmarks]
         ys = [point.y for point in landmarks]
         min_x, max_x = int(min(xs) * width), int(max(xs) * width)
@@ -92,6 +96,8 @@ class GazeEstimator:
             "looking_right": gaze["looking_right"],
             "looking_down": gaze["looking_down"],
             "looking_away": not looking_at_camera,
+            "face_count": len(all_faces),
+            "eyes_visible": True,
         }
 
     def _estimate_gaze_from_landmarks(self, landmarks) -> dict:
@@ -145,18 +151,35 @@ class GazeEstimator:
         height, width = frame.shape[:2]
         x, y, w, h = max(faces, key=lambda item: item[2] * item[3])
         face_centered = self._is_face_centered(x, x + w, width)
-        looking_down = (y + h) / max(height, 1) > 0.86
-        looking_at_camera = face_centered and not looking_down
+        eye_status = self._estimate_eyes_with_haar(frame, x, y, w, h)
+        looking_left = not face_centered and (x + w / 2) < width / 2
+        looking_right = not face_centered and (x + w / 2) >= width / 2
+        looking_down = eye_status["looking_down"] or (y + h) / max(height, 1) > 0.86
+        looking_at_camera = face_centered and eye_status["eyes_visible"] and not looking_down
         _draw_box(frame, x, y, x + w, y + h, "face fallback", (39, 174, 96))
         return {
             "face_visible": True,
             "face_centered": face_centered,
             "looking_at_camera": looking_at_camera,
-            "looking_left": False,
-            "looking_right": False,
+            "looking_left": looking_left,
+            "looking_right": looking_right,
             "looking_down": looking_down,
             "looking_away": not looking_at_camera,
+            "face_count": len(faces),
+            "eyes_visible": eye_status["eyes_visible"],
         }
+
+    def _estimate_eyes_with_haar(self, frame: np.ndarray, x: int, y: int, w: int, h: int) -> dict:
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        upper_face = gray[y : y + int(h * 0.62), x : x + w]
+        eyes = self.eye_cascade.detectMultiScale(upper_face, scaleFactor=1.08, minNeighbors=4, minSize=(18, 12))
+
+        eyes_visible = len(eyes) >= 1
+        looking_down = not eyes_visible
+        for ex, ey, ew, eh in eyes[:2]:
+            _draw_box(frame, x + ex, y + ey, x + ex + ew, y + ey + eh, "eye", (52, 152, 219))
+
+        return {"eyes_visible": eyes_visible, "looking_down": looking_down}
 
     def _is_face_centered(self, min_x: int, max_x: int, width: int) -> bool:
         center_x = (min_x + max_x) / 2

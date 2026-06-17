@@ -207,9 +207,14 @@ def render_detection_panel(status: dict | None = None) -> None:
 
     gaze_cols = st.columns(4)
     gaze_cols[0].caption(f"Face centered: {'yes' if status.get('face_centered') else 'no'}")
-    gaze_cols[1].caption(f"Looking left: {'yes' if status.get('looking_left') else 'no'}")
-    gaze_cols[2].caption(f"Looking right: {'yes' if status.get('looking_right') else 'no'}")
+    gaze_cols[1].caption(f"Eyes visible: {'yes' if status.get('eyes_visible') else 'no'}")
+    gaze_cols[2].caption(f"Looking left/right: {'left' if status.get('looking_left') else 'right' if status.get('looking_right') else 'no'}")
     gaze_cols[3].caption(f"Looking down: {'yes' if status.get('looking_down') else 'no'}")
+    st.caption(
+        "Detector mode: "
+        f"{status.get('detector_mode', 'unknown')}. "
+        "YOLO/MediaPipe memberi hasil terbaik; OpenCV fallback hanya estimasi sederhana."
+    )
 
     if st.session_state.current_frame_results:
         frame_results = st.session_state.current_frame_results

@@ -40,7 +40,7 @@ class ObjectDetector:
             "book_detected": False,
         }
         if self.model is None:
-            return status
+            return self._detect_phone_like_fallback(frame, status)
 
         try:
             results = self.model.predict(
@@ -73,6 +73,37 @@ class ObjectDetector:
                 elif class_id == COCO_CLASS_IDS["book"] or class_name == "book":
                     status["book_detected"] = True
                     _draw_box(frame, x1, y1, x2, y2, f"book {confidence:.2f}", (211, 84, 0))
+
+        return status
+
+    def _detect_phone_like_fallback(self, frame: np.ndarray, status: dict) -> dict:
+        """Best-effort phone-like rectangle heuristic when YOLO is unavailable.
+
+        This is intentionally conservative and only supports the demo fallback.
+        Reliable phone/laptop/book classification still requires YOLO.
+        """
+        height, width = frame.shape[:2]
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+        edges = cv2.Canny(blurred, 70, 170)
+        contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+        for contour in contours:
+            area = cv2.contourArea(contour)
+            if area < 900 or area > width * height * 0.08:
+                continue
+
+            x, y, w, h = cv2.boundingRect(contour)
+            aspect = h / max(w, 1)
+            rectangularity = area / max(w * h, 1)
+            center_y = y + h / 2
+
+            # A hand-held phone usually appears as a small vertical rectangle
+            # in the lower or side area of the frame.
+            if 1.45 <= aspect <= 3.4 and rectangularity >= 0.45 and center_y > height * 0.35:
+                status["phone_detected"] = True
+                _draw_box(frame, x, y, x + w, y + h, "phone-like", (192, 57, 43))
+                break
 
         return status
 
