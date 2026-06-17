@@ -2,36 +2,21 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-
-def _ratio(metrics: dict, key: str) -> float:
-    frames = max(metrics.get("frames", 0), 1)
-    return round(metrics.get(key, 0) / frames, 4)
-
-
-def _metric_ratios(metrics: dict) -> dict:
-    return {
-        "frames_analyzed": metrics.get("frames", 0),
-        "face_visible_ratio": _ratio(metrics, "face_visible"),
-        "person_detected_ratio": _ratio(metrics, "person_detected"),
-        "looking_at_camera_ratio": _ratio(metrics, "looking_at_camera"),
-        "looking_away_ratio": _ratio(metrics, "looking_away"),
-        "phone_detected_ratio": _ratio(metrics, "phone_detected"),
-        "multiple_persons_ratio": _ratio(metrics, "multiple_persons"),
-    }
+from metrics import build_question_metrics_summary
 
 
 def _label_for(ratios: dict) -> str:
-    if ratios["person_detected_ratio"] < 0.5 or ratios["face_visible_ratio"] < 0.45:
+    if ratios["person_visible_percentage"] < 50 or ratios["face_visible_percentage"] < 45:
         return "Unstable Interview Condition"
-    if ratios["multiple_persons_ratio"] >= 0.15:
+    if ratios["multiple_persons_percentage"] >= 15:
         return "External Assistance Indicator"
-    if ratios["phone_detected_ratio"] >= 0.12:
+    if ratios["phone_detected_percentage"] >= 12:
         return "Possible Device Usage Indicator"
-    if ratios["looking_away_ratio"] >= 0.45:
+    if ratios["looking_away_percentage"] >= 45:
         return "Review Recommended"
-    if ratios["looking_away_ratio"] >= 0.25 or ratios["face_visible_ratio"] < 0.75:
+    if ratios["looking_away_percentage"] >= 25 or ratios["face_visible_percentage"] < 75:
         return "Light Review Needed"
-    if ratios["looking_at_camera_ratio"] >= 0.7:
+    if ratios["looking_at_camera_percentage"] >= 70:
         return "Stable Focus"
     return "Mostly Focused"
 
@@ -57,16 +42,20 @@ def build_question_summary(
     question_text: str,
     started_at: str | None,
     stopped_at: str,
-    metrics: dict,
+    frame_results: list[dict],
 ) -> dict:
-    ratios = _metric_ratios(metrics)
+    question_summary = build_question_metrics_summary(
+        question_id=question_id,
+        question_text=question_text,
+        frame_results=frame_results,
+        started_at=started_at,
+        stopped_at=stopped_at,
+    )
+    ratios = question_summary["metrics"]
     label = _label_for(ratios)
-    return {
-        "question_id": question_id,
-        "question_text": question_text,
+    return question_summary | {
         "started_at": started_at,
         "stopped_at": stopped_at,
-        "metrics": ratios,
         "observation_label": label,
         "summary": _summary_for(label, ratios),
     }

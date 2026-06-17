@@ -10,9 +10,10 @@ This prototype does not decide whether a candidate is accepted or rejected. It d
 - One-question-at-a-time interview flow
 - Webcam-based frame analysis
 - Face visibility status
-- Person presence status
+- Person count and multiple-person status
 - Approximate camera focus / looking-away status
-- Phone indicator and multiple-person indicator when YOLO is available
+- Approximate looking-left, looking-right, and looking-down status
+- Phone, laptop, and book indicators when YOLO is available
 - Question-level observation summaries
 - Final interview observation report
 - JSON export
@@ -26,7 +27,7 @@ pip install -r requirements.txt
 streamlit run app.py
 ```
 
-If `ultralytics` or `mediapipe` cannot run on the machine, the app still attempts basic OpenCV face-based fallback detection.
+If `ultralytics` or `mediapipe` cannot run on the machine, the app still attempts basic OpenCV face-based fallback detection. Gaze/head direction is an approximation based on webcam-visible landmarks, not perfect eye tracking.
 
 ## Privacy
 

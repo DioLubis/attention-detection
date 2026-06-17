@@ -22,7 +22,7 @@ def init_state() -> None:
         "question_index": 0,
         "running": False,
         "current_started_at": None,
-        "current_metrics": None,
+        "current_frame_results": None,
         "question_reports": [],
         "last_status": None,
         "capture_error": None,
@@ -45,43 +45,17 @@ def get_camera() -> cv2.VideoCapture:
     return camera
 
 
-def new_metrics() -> dict:
-    return {
-        "frames": 0,
-        "face_visible": 0,
-        "person_detected": 0,
-        "looking_at_camera": 0,
-        "looking_away": 0,
-        "phone_detected": 0,
-        "multiple_persons": 0,
-    }
-
-
-def accumulate(metrics: dict, status: dict) -> None:
-    metrics["frames"] += 1
-    for key in (
-        "face_visible",
-        "person_detected",
-        "looking_at_camera",
-        "looking_away",
-        "phone_detected",
-        "multiple_persons",
-    ):
-        if status.get(key):
-            metrics[key] += 1
-
-
 def start_question() -> None:
     if st.session_state.question_index >= len(QUESTIONS):
         return
     st.session_state.running = True
     st.session_state.current_started_at = datetime.now(timezone.utc).isoformat()
-    st.session_state.current_metrics = new_metrics()
+    st.session_state.current_frame_results = []
     st.session_state.capture_error = None
 
 
 def stop_question() -> None:
-    if not st.session_state.running or st.session_state.current_metrics is None:
+    if not st.session_state.running or st.session_state.current_frame_results is None:
         return
 
     question = QUESTIONS[st.session_state.question_index]
@@ -90,12 +64,12 @@ def stop_question() -> None:
         question_text=question,
         started_at=st.session_state.current_started_at,
         stopped_at=datetime.now(timezone.utc).isoformat(),
-        metrics=st.session_state.current_metrics,
+        frame_results=st.session_state.current_frame_results,
     )
     st.session_state.question_reports.append(report)
     st.session_state.running = False
     st.session_state.current_started_at = None
-    st.session_state.current_metrics = None
+    st.session_state.current_frame_results = None
 
 
 def next_question() -> None:
@@ -109,15 +83,16 @@ def reset_session() -> None:
     st.session_state.question_index = 0
     st.session_state.running = False
     st.session_state.current_started_at = None
-    st.session_state.current_metrics = None
+    st.session_state.current_frame_results = None
     st.session_state.question_reports = []
     st.session_state.last_status = None
     st.session_state.capture_error = None
 
 
-def ratio(metrics: dict, key: str) -> float:
-    frames = max(metrics.get("frames", 0), 1)
-    return metrics.get(key, 0) / frames
+def percentage(frame_results: list[dict], key: str) -> float:
+    if not frame_results:
+        return 0.0
+    return sum(1 for frame in frame_results if frame.get(key)) / len(frame_results)
 
 
 def status_pill(label: str, active: bool, good_when_active: bool = True) -> None:
@@ -169,6 +144,11 @@ def render_live_session() -> None:
 
     camera = get_camera()
     analyzer = get_analyzer()
+    if not camera.isOpened():
+        st.session_state.capture_error = "Unable to open webcam. Check camera permission or another app using the camera."
+        st.error(st.session_state.capture_error)
+        return
+
     ok, frame = camera.read()
     if not ok:
         st.session_state.capture_error = "Unable to read from webcam. Check camera permission or another app using the camera."
@@ -177,7 +157,7 @@ def render_live_session() -> None:
 
     analyzed_frame, status = analyzer.analyze(frame)
     st.session_state.last_status = status
-    accumulate(st.session_state.current_metrics, status)
+    st.session_state.current_frame_results.append(status)
 
     video_slot.image(cv2.cvtColor(analyzed_frame, cv2.COLOR_BGR2RGB), channels="RGB", use_container_width=True)
     with status_slot.container():
@@ -191,11 +171,12 @@ def render_detection_panel(status: dict | None = None) -> None:
     st.subheader("4. Real-time Detection Panel")
     status = status or st.session_state.last_status or {}
 
-    col1, col2, col3, col4, col5 = st.columns(5)
+    col1, col2, col3, col4, col5, col6 = st.columns(6)
     with col1:
         status_pill("Face visible" if status.get("face_visible") else "Face not clearly visible", status.get("face_visible", False))
     with col2:
-        status_pill("Person detected" if status.get("person_detected") else "Person not detected", status.get("person_detected", False))
+        person_count = status.get("person_count", 0)
+        status_pill(f"Person detected ({person_count})" if person_count else "Person not detected", person_count > 0)
     with col3:
         status_pill(
             "Looking at camera" if status.get("looking_at_camera") else "Looking away",
@@ -213,15 +194,31 @@ def render_detection_panel(status: dict | None = None) -> None:
             status.get("multiple_persons", False),
             good_when_active=False,
         )
+    with col6:
+        context_labels = []
+        if status.get("laptop_detected"):
+            context_labels.append("laptop")
+        if status.get("book_detected"):
+            context_labels.append("book")
+        label = "Context: " + ", ".join(context_labels) if context_labels else "No laptop/book indicator"
+        status_pill(label, bool(context_labels), good_when_active=False)
 
-    if st.session_state.current_metrics:
-        metrics = st.session_state.current_metrics
+    gaze_cols = st.columns(4)
+    gaze_cols[0].caption(f"Face centered: {'yes' if status.get('face_centered') else 'no'}")
+    gaze_cols[1].caption(f"Looking left: {'yes' if status.get('looking_left') else 'no'}")
+    gaze_cols[2].caption(f"Looking right: {'yes' if status.get('looking_right') else 'no'}")
+    gaze_cols[3].caption(f"Looking down: {'yes' if status.get('looking_down') else 'no'}")
+
+    if st.session_state.current_frame_results:
+        frame_results = st.session_state.current_frame_results
         st.caption(
             "Current question metrics: "
-            f"{metrics['frames']} frames, "
-            f"face visible {ratio(metrics, 'face_visible'):.0%}, "
-            f"camera focus {ratio(metrics, 'looking_at_camera'):.0%}, "
-            f"phone indicator {ratio(metrics, 'phone_detected'):.0%}."
+            f"{len(frame_results)} frames, "
+            f"face visible {percentage(frame_results, 'face_visible'):.0%}, "
+            f"camera focus {percentage(frame_results, 'looking_at_camera'):.0%}, "
+            f"phone indicator {percentage(frame_results, 'phone_detected'):.0%}, "
+            f"laptop indicator {percentage(frame_results, 'laptop_detected'):.0%}, "
+            f"book indicator {percentage(frame_results, 'book_detected'):.0%}."
         )
 
 
