@@ -18,7 +18,8 @@ COCO_CLASS_IDS = {
 class ObjectDetectionConfig:
     model_name: str = "yolov8n.pt"
     image_size: int = 640
-    confidence: float = 0.25
+    confidence: float = 0.18
+    phone_confidence: float = 0.12
 
 
 class ObjectDetector:
@@ -61,18 +62,62 @@ class ObjectDetector:
                 confidence = float(box.conf[0])
                 x1, y1, x2, y2 = [int(value) for value in box.xyxy[0]]
 
-                if class_id == COCO_CLASS_IDS["person"]:
+                if class_id == COCO_CLASS_IDS["person"] and confidence >= self.config.confidence:
                     status["person_count"] += 1
                     _draw_box(frame, x1, y1, x2, y2, f"person {confidence:.2f}", (41, 128, 185))
-                elif class_id == COCO_CLASS_IDS["cell phone"] or class_name == "cell phone":
+                elif (class_id == COCO_CLASS_IDS["cell phone"] or class_name == "cell phone") and confidence >= self.config.phone_confidence:
                     status["phone_detected"] = True
                     _draw_box(frame, x1, y1, x2, y2, f"phone {confidence:.2f}", (192, 57, 43))
-                elif class_id == COCO_CLASS_IDS["laptop"] or class_name == "laptop":
+                elif (class_id == COCO_CLASS_IDS["laptop"] or class_name == "laptop") and confidence >= self.config.confidence:
                     status["laptop_detected"] = True
                     _draw_box(frame, x1, y1, x2, y2, f"laptop {confidence:.2f}", (142, 68, 173))
-                elif class_id == COCO_CLASS_IDS["book"] or class_name == "book":
+                elif (class_id == COCO_CLASS_IDS["book"] or class_name == "book") and confidence >= self.config.confidence:
                     status["book_detected"] = True
                     _draw_box(frame, x1, y1, x2, y2, f"book {confidence:.2f}", (211, 84, 0))
+
+        if not status["phone_detected"]:
+            status = self._detect_phone_with_crops(frame, status)
+        if not status["phone_detected"]:
+            status = self._detect_phone_like_fallback(frame, status)
+        return status
+
+    def _detect_phone_with_crops(self, frame: np.ndarray, status: dict) -> dict:
+        if self.model is None:
+            return status
+
+        height, width = frame.shape[:2]
+        crops = [
+            (0, int(height * 0.35), width, height),
+            (0, int(height * 0.20), int(width * 0.42), height),
+            (int(width * 0.58), int(height * 0.20), width, height),
+        ]
+
+        for x1, y1, x2, y2 in crops:
+            crop = frame[y1:y2, x1:x2]
+            if crop.size == 0:
+                continue
+
+            try:
+                results = self.model.predict(
+                    crop,
+                    imgsz=self.config.image_size,
+                    conf=self.config.phone_confidence,
+                    classes=[COCO_CLASS_IDS["cell phone"]],
+                    verbose=False,
+                )
+            except Exception:
+                continue
+
+            for result in results:
+                for box in result.boxes:
+                    confidence = float(box.conf[0])
+                    if confidence < self.config.phone_confidence:
+                        continue
+                    bx1, by1, bx2, by2 = [int(value) for value in box.xyxy[0]]
+                    gx1, gy1, gx2, gy2 = x1 + bx1, y1 + by1, x1 + bx2, y1 + by2
+                    status["phone_detected"] = True
+                    _draw_box(frame, gx1, gy1, gx2, gy2, f"phone crop {confidence:.2f}", (231, 76, 60))
+                    return status
 
         return status
 
@@ -90,17 +135,21 @@ class ObjectDetector:
 
         for contour in contours:
             area = cv2.contourArea(contour)
-            if area < 900 or area > width * height * 0.08:
+            if area < 650 or area > width * height * 0.10:
                 continue
 
             x, y, w, h = cv2.boundingRect(contour)
-            aspect = h / max(w, 1)
+            long_side = max(w, h)
+            short_side = max(min(w, h), 1)
+            aspect = long_side / short_side
             rectangularity = area / max(w * h, 1)
             center_y = y + h / 2
+            center_x = x + w / 2
+            near_frame_edge = center_x < width * 0.25 or center_x > width * 0.75
 
             # A hand-held phone usually appears as a small vertical rectangle
-            # in the lower or side area of the frame.
-            if 1.45 <= aspect <= 3.4 and rectangularity >= 0.45 and center_y > height * 0.35:
+            # or horizontal rectangle in the lower or side area of the frame.
+            if 1.35 <= aspect <= 3.8 and rectangularity >= 0.38 and (center_y > height * 0.42 or near_frame_edge):
                 status["phone_detected"] = True
                 _draw_box(frame, x, y, x + w, y + h, "phone-like", (192, 57, 43))
                 break

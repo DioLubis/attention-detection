@@ -13,7 +13,8 @@ class GazeConfig:
     head_right_threshold: float = 0.045
     iris_left_threshold: float = 0.42
     iris_right_threshold: float = 0.58
-    down_threshold: float = 0.62
+    iris_down_threshold: float = 0.64
+    head_down_threshold: float = 0.70
 
 
 class GazeEstimator:
@@ -73,6 +74,10 @@ class GazeEstimator:
 
         face_centered = self._is_face_centered(min_x, max_x, width)
         gaze = self._estimate_gaze_from_landmarks(landmarks)
+        # Horizontal gaze should win over down-gaze. Head turns often move the
+        # nose vertically enough to look like "down" with a simple threshold.
+        if gaze["looking_left"] or gaze["looking_right"]:
+            gaze["looking_down"] = False
         looking_at_camera = face_centered and not (
             gaze["looking_left"] or gaze["looking_right"] or gaze["looking_down"]
         )
@@ -113,6 +118,7 @@ class GazeEstimator:
         vertical_offset = (nose.y - forehead.y) / vertical_span
 
         iris_ratio = self._average_iris_ratio(landmarks)
+        iris_vertical_ratio = self._average_iris_vertical_ratio(landmarks)
         looking_left = horizontal_offset < self.config.head_left_threshold
         looking_right = horizontal_offset > self.config.head_right_threshold
 
@@ -120,16 +126,28 @@ class GazeEstimator:
             looking_left = looking_left or iris_ratio < self.config.iris_left_threshold
             looking_right = looking_right or iris_ratio > self.config.iris_right_threshold
 
+        looking_down = vertical_offset >= self.config.head_down_threshold
+        if iris_vertical_ratio is not None:
+            looking_down = looking_down or iris_vertical_ratio >= self.config.iris_down_threshold
+
         return {
             "looking_left": looking_left,
             "looking_right": looking_right,
-            "looking_down": vertical_offset >= self.config.down_threshold,
+            "looking_down": looking_down,
         }
 
     def _average_iris_ratio(self, landmarks) -> float | None:
         try:
             left_ratio = self._iris_ratio(landmarks, 33, 133, (468, 469, 470, 471))
             right_ratio = self._iris_ratio(landmarks, 362, 263, (473, 474, 475, 476))
+            return (left_ratio + right_ratio) / 2
+        except (IndexError, ZeroDivisionError):
+            return None
+
+    def _average_iris_vertical_ratio(self, landmarks) -> float | None:
+        try:
+            left_ratio = self._iris_vertical_ratio(landmarks, eye_top=159, eye_bottom=145, iris_points=(468, 469, 470, 471))
+            right_ratio = self._iris_vertical_ratio(landmarks, eye_top=386, eye_bottom=374, iris_points=(473, 474, 475, 476))
             return (left_ratio + right_ratio) / 2
         except (IndexError, ZeroDivisionError):
             return None
@@ -141,6 +159,14 @@ class GazeEstimator:
         eye_min = min(left_x, right_x)
         eye_max = max(left_x, right_x)
         return (iris_x - eye_min) / max(eye_max - eye_min, 0.001)
+
+    def _iris_vertical_ratio(self, landmarks, eye_top: int, eye_bottom: int, iris_points: tuple[int, ...]) -> float:
+        top_y = landmarks[eye_top].y
+        bottom_y = landmarks[eye_bottom].y
+        iris_y = sum(landmarks[index].y for index in iris_points) / len(iris_points)
+        eye_min = min(top_y, bottom_y)
+        eye_max = max(top_y, bottom_y)
+        return (iris_y - eye_min) / max(eye_max - eye_min, 0.001)
 
     def _estimate_with_haar(self, frame: np.ndarray) -> dict:
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
@@ -154,7 +180,9 @@ class GazeEstimator:
         eye_status = self._estimate_eyes_with_haar(frame, x, y, w, h)
         looking_left = not face_centered and (x + w / 2) < width / 2
         looking_right = not face_centered and (x + w / 2) >= width / 2
-        looking_down = eye_status["looking_down"] or (y + h) / max(height, 1) > 0.86
+        looking_down = (not (looking_left or looking_right)) and (
+            eye_status["looking_down"] or (y + h) / max(height, 1) > 0.90
+        )
         looking_at_camera = face_centered and eye_status["eyes_visible"] and not looking_down
         _draw_box(frame, x, y, x + w, y + h, "face fallback", (39, 174, 96))
         return {
@@ -189,12 +217,12 @@ class GazeEstimator:
 def direction_label(looking_at_camera: bool, gaze: dict) -> str:
     if looking_at_camera:
         return "at camera"
-    if gaze["looking_down"]:
-        return "looking down"
     if gaze["looking_left"]:
         return "looking left"
     if gaze["looking_right"]:
         return "looking right"
+    if gaze["looking_down"]:
+        return "looking down"
     return "looking away"
 
 

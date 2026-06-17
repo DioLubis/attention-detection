@@ -58,6 +58,20 @@ class SentimentRulesTest(unittest.TestCase):
         self.assertIn("recruiter_recommendation", result)
         self.assertIn("human_in_the_loop_disclaimer", result)
 
+    def test_question_summary_mentions_multiple_indicators(self) -> None:
+        result = build_question_sentiment(
+            metrics(
+                multiple_persons_percentage=12.0,
+                phone_detected_percentage=18.0,
+                looking_down_percentage=20.0,
+            )
+        )
+
+        self.assertEqual(result["observation_label"], "External Assistance Indicator")
+        self.assertIn("Multiple-person indicators", result["short_summary"])
+        self.assertIn("Phone indicators", result["short_summary"])
+        self.assertIn("Looking-down indicators", result["short_summary"])
+
     def test_interview_summary_uses_highest_priority_label(self) -> None:
         result = build_interview_sentiment(
             [

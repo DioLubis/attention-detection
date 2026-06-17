@@ -25,8 +25,8 @@ def build_question_sentiment(metrics: dict[str, float]) -> dict[str, str]:
     label = classify_observation(metrics)
     return {
         "observation_label": label,
-        "short_summary": _short_summary(label),
-        "recruiter_recommendation": _recruiter_recommendation(label),
+        "short_summary": _short_summary(label, metrics),
+        "recruiter_recommendation": _recruiter_recommendation(label, metrics),
         "human_in_the_loop_disclaimer": DISCLAIMER,
     }
 
@@ -61,9 +61,10 @@ def build_interview_sentiment(question_summaries: list[dict[str, Any]]) -> dict[
     labels = [summary.get("observation_label", "Mostly Focused") for summary in question_summaries]
     final_label = _highest_priority_label(labels)
     completed_questions = len(question_summaries)
+    aggregate_notes = _aggregate_interview_notes(question_summaries)
     return {
         "observation_label": final_label if labels else "No Completed Questions",
-        "short_summary": _interview_summary(final_label, completed_questions),
+        "short_summary": _interview_summary(final_label, completed_questions, aggregate_notes),
         "recruiter_recommendation": _interview_recommendation(final_label, completed_questions),
         "human_in_the_loop_disclaimer": DISCLAIMER,
         "label_counts": dict(Counter(labels)),
@@ -83,20 +84,24 @@ def _highest_priority_label(labels: list[str]) -> str:
     return "Mostly Focused"
 
 
-def _short_summary(label: str) -> str:
-    summaries = {
+def _short_summary(label: str, metrics: dict[str, float]) -> str:
+    base = {
         "Stable Focus": "The candidate was visually present and maintained a stable camera-facing interview condition for most of the answer.",
         "Mostly Focused": "The candidate was visually present for most of the answer with natural gaze movement.",
-        "Light Review Needed": "The candidate was visually present for most of the answer, but looked away from the camera several times.",
-        "Review Recommended": "The answer segment includes notable periods of looking away, looking down, or reduced face visibility.",
+        "Light Review Needed": "The candidate was visually present for most of the answer, with some attention indicators that may benefit from light review.",
+        "Review Recommended": "The answer segment includes visual conditions that should be reviewed with additional context.",
         "Unstable Interview Condition": "The visual conditions were not consistently stable because face or person visibility was limited during part of the answer.",
-        "Possible Device Usage Indicator": "A phone-like object or repeated downward gaze indicator appeared during the answer.",
+        "Possible Device Usage Indicator": "A possible device or repeated downward-gaze indicator appeared during the answer.",
         "External Assistance Indicator": "More than one person appeared in the frame for a notable portion of the answer.",
-    }
-    return summaries.get(label, "The answer segment was processed and is available for recruiter review.")
+    }.get(label, "The answer segment was processed and is available for recruiter review.")
+
+    details = _metric_detail_sentences(metrics)
+    if not details:
+        return base
+    return f"{base} " + " ".join(details)
 
 
-def _recruiter_recommendation(label: str) -> str:
+def _recruiter_recommendation(label: str, metrics: dict[str, float] | None = None) -> str:
     recommendations = {
         "Stable Focus": "The recruiter can proceed with normal review of the candidate's answer content.",
         "Mostly Focused": "The recruiter can proceed with normal review of the candidate's answer content.",
@@ -106,27 +111,101 @@ def _recruiter_recommendation(label: str) -> str:
         "Possible Device Usage Indicator": "The recruiter may review the segment to determine whether the detected visual context is relevant.",
         "External Assistance Indicator": "The recruiter may review the segment to understand whether another visible person affected the interview context.",
     }
-    return recommendations.get(label, "The recruiter should review the observation in context.")
+    recommendation = recommendations.get(label, "The recruiter should review the observation in context.")
+    if metrics:
+        flagged = _flag_names(metrics)
+        if len(flagged) > 1:
+            recommendation += " Review all noted visual indicators together rather than focusing on a single signal."
+    return recommendation
 
 
-def _interview_summary(final_label: str, completed_questions: int) -> str:
+def _metric_detail_sentences(metrics: dict[str, float]) -> list[str]:
+    details = []
+    multiple = _metric(metrics, "multiple_persons_percentage")
+    phone = _metric(metrics, "phone_detected_percentage")
+    away = _metric(metrics, "looking_away_percentage")
+    left = _metric(metrics, "looking_left_percentage")
+    right = _metric(metrics, "looking_right_percentage")
+    down = _metric(metrics, "looking_down_percentage")
+    face = _metric(metrics, "face_visible_percentage")
+    person = _metric(metrics, "person_visible_percentage")
+    laptop = _metric(metrics, "laptop_detected_percentage")
+    book = _metric(metrics, "book_detected_percentage")
+
+    if multiple >= 5:
+        details.append(f"Multiple-person indicators appeared in {multiple:.1f}% of analyzed frames.")
+    if phone >= 5:
+        details.append(f"Phone indicators appeared in {phone:.1f}% of analyzed frames.")
+    if down >= 15:
+        details.append(f"Looking-down indicators appeared in {down:.1f}% of analyzed frames.")
+    if away >= 25:
+        details.append(f"Looking-away indicators appeared in {away:.1f}% of analyzed frames.")
+    if left >= 15 or right >= 15:
+        details.append(f"Side-gaze indicators were observed, with left at {left:.1f}% and right at {right:.1f}% of analyzed frames.")
+    if face < 75:
+        details.append(f"Face visibility was {face:.1f}% across analyzed frames.")
+    if person < 90:
+        details.append(f"Person visibility was {person:.1f}% across analyzed frames.")
+    if laptop >= 15:
+        details.append(f"A laptop-like object was visible in {laptop:.1f}% of analyzed frames.")
+    if book >= 10:
+        details.append(f"Book or paper-like indicators appeared in {book:.1f}% of analyzed frames.")
+    return details
+
+
+def _flag_names(metrics: dict[str, float]) -> list[str]:
+    names = []
+    if _metric(metrics, "multiple_persons_percentage") >= 5:
+        names.append("multiple-person")
+    if _metric(metrics, "phone_detected_percentage") >= 5:
+        names.append("phone")
+    if _metric(metrics, "looking_down_percentage") >= 15:
+        names.append("looking-down")
+    if _metric(metrics, "looking_away_percentage") >= 25:
+        names.append("looking-away")
+    if _metric(metrics, "face_visible_percentage") < 75:
+        names.append("face-visibility")
+    return names
+
+
+def _aggregate_interview_notes(question_summaries: list[dict[str, Any]]) -> list[str]:
+    if not question_summaries:
+        return []
+
+    counters = Counter()
+    for report in question_summaries:
+        metrics = report.get("metrics", {})
+        for name in _flag_names(metrics):
+            counters[name] += 1
+
+    notes = []
+    for name, count in counters.items():
+        notes.append(f"{name} indicator appeared in {count} question segment(s)")
+    return notes
+
+
+def _interview_summary(final_label: str, completed_questions: int, aggregate_notes: list[str]) -> str:
     if completed_questions == 0:
         return "No completed question segments are available for interview-level observation."
     if final_label == "Stable Focus":
-        return "Across the completed questions, the visual interview condition was consistently stable."
+        summary = "Across the completed questions, the visual interview condition was consistently stable."
     if final_label == "Mostly Focused":
-        return "Across the completed questions, the candidate was generally visible with mostly stable interview conditions."
+        summary = "Across the completed questions, the candidate was generally visible with mostly stable interview conditions."
     if final_label == "Light Review Needed":
-        return "Across the completed questions, most segments were usable, with some visual indicators that may benefit from light recruiter review."
+        summary = "Across the completed questions, most segments were usable, with some visual indicators that may benefit from light recruiter review."
     if final_label == "Review Recommended":
-        return "Across the completed questions, at least one segment contains visual conditions that should be reviewed with additional context."
+        summary = "Across the completed questions, at least one segment contains visual conditions that should be reviewed with additional context."
     if final_label == "Unstable Interview Condition":
-        return "Across the completed questions, at least one segment had limited face or person visibility, so recruiter review is required."
+        summary = "Across the completed questions, at least one segment had limited face or person visibility, so recruiter review is required."
     if final_label == "Possible Device Usage Indicator":
-        return "Across the completed questions, at least one segment included a possible device or downward-gaze indicator for recruiter review."
+        summary = "Across the completed questions, at least one segment included a possible device or downward-gaze indicator for recruiter review."
     if final_label == "External Assistance Indicator":
-        return "Across the completed questions, at least one segment included a multiple-person indicator for recruiter review."
-    return f"{completed_questions} completed question segment(s) are available for recruiter review."
+        summary = "Across the completed questions, at least one segment included a multiple-person indicator for recruiter review."
+    if final_label not in LABEL_PRIORITY:
+        summary = f"{completed_questions} completed question segment(s) are available for recruiter review."
+    if aggregate_notes:
+        summary += " Noted indicators: " + "; ".join(aggregate_notes) + "."
+    return summary
 
 
 def _interview_recommendation(final_label: str, completed_questions: int) -> str:
