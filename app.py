@@ -161,7 +161,7 @@ def render_live_session() -> None:
     st.session_state.last_status = status
     st.session_state.current_frame_results.append(status)
 
-    video_slot.image(cv2.cvtColor(analyzed_frame, cv2.COLOR_BGR2RGB), channels="RGB", use_container_width=True)
+    video_slot.image(cv2.cvtColor(analyzed_frame, cv2.COLOR_BGR2RGB), channels="RGB", use_column_width=True)
     with status_slot.container():
         render_detection_panel(status)
 
