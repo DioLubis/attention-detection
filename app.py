@@ -1,14 +1,15 @@
 from __future__ import annotations
 
 import json
-import time
+import threading
 import uuid
 from datetime import datetime, timezone
 
-import cv2
+import av
 import streamlit as st
+from streamlit_webrtc import RTCConfiguration, VideoProcessorBase, WebRtcMode, webrtc_streamer
 
-from src.detection.webcam import FrameAnalyzer, WebcamCapture
+from src.detection.webcam import FrameAnalyzer
 from src.processing.report_generator import (
     build_export_report,
     build_internal_report,
@@ -17,6 +18,42 @@ from src.processing.report_generator import (
 )
 from src.utils.config import APP_TITLE, CANDIDATE_CONTEXT, QUESTIONS_PATH
 from src.utils.helpers import load_json, percentage
+
+RTC_CONFIGURATION = RTCConfiguration({"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]})
+
+
+class InterviewVideoProcessor(VideoProcessorBase):
+    """WebRTC video processor.
+
+    The browser owns the camera stream, so Streamlit no longer has to redraw a
+    new image element every few hundred milliseconds. This removes the flicker
+    caused by the previous `st.image` polling approach.
+    """
+
+    def __init__(self) -> None:
+        self.analyzer = FrameAnalyzer()
+        self.lock = threading.Lock()
+        self.frame_results: list[dict] = []
+        self.last_status: dict | None = None
+
+    def recv(self, frame: av.VideoFrame) -> av.VideoFrame:
+        image = frame.to_ndarray(format="bgr24")
+        analyzed_frame, status = self.analyzer.analyze(image)
+
+        with self.lock:
+            self.last_status = status
+            self.frame_results.append(status)
+
+        return av.VideoFrame.from_ndarray(analyzed_frame, format="bgr24")
+
+    def snapshot(self) -> tuple[list[dict], dict | None]:
+        with self.lock:
+            return list(self.frame_results), dict(self.last_status) if self.last_status else None
+
+    def clear(self) -> None:
+        with self.lock:
+            self.frame_results.clear()
+            self.last_status = None
 
 
 def init_state() -> None:
@@ -29,6 +66,7 @@ def init_state() -> None:
         "last_status": None,
         "last_frame_rgb": None,
         "capture_error": None,
+        "video_processor": None,
     }
     for key, value in defaults.items():
         if key not in st.session_state:
@@ -44,16 +82,6 @@ def get_questions() -> list[str]:
     return load_json(QUESTIONS_PATH)
 
 
-@st.cache_resource(show_spinner=False)
-def get_analyzer() -> FrameAnalyzer:
-    return FrameAnalyzer()
-
-
-@st.cache_resource(show_spinner=False)
-def get_webcam() -> WebcamCapture:
-    return WebcamCapture()
-
-
 def start_question() -> None:
     if st.session_state.question_index >= len(get_questions()):
         return
@@ -61,11 +89,22 @@ def start_question() -> None:
     st.session_state.current_started_at = datetime.now(timezone.utc).isoformat()
     st.session_state.current_frame_results = []
     st.session_state.capture_error = None
+    processor = st.session_state.get("video_processor")
+    if processor is not None:
+        processor.clear()
 
 
 def stop_question() -> None:
     if not st.session_state.running or st.session_state.current_frame_results is None:
         return
+
+    processor = st.session_state.get("video_processor")
+    frame_results = st.session_state.current_frame_results
+    if processor is not None:
+        processor_results, last_status = processor.snapshot()
+        if processor_results:
+            frame_results = processor_results
+            st.session_state.last_status = last_status
 
     question = get_questions()[st.session_state.question_index]
     report = build_question_report(
@@ -73,13 +112,14 @@ def stop_question() -> None:
         question_text=question,
         started_at=st.session_state.current_started_at,
         stopped_at=datetime.now(timezone.utc).isoformat(),
-        frame_results=st.session_state.current_frame_results,
+        frame_results=frame_results,
     )
     st.session_state.question_reports.append(report)
     st.session_state.running = False
     st.session_state.current_started_at = None
     st.session_state.current_frame_results = None
-    get_webcam().stop()
+    if processor is not None:
+        processor.clear()
 
 
 def next_question() -> None:
@@ -90,7 +130,9 @@ def next_question() -> None:
 
 
 def reset_session() -> None:
-    get_webcam().stop()
+    processor = st.session_state.get("video_processor")
+    if processor is not None:
+        processor.clear()
     st.session_state.question_index = 0
     st.session_state.running = False
     st.session_state.current_started_at = None
@@ -144,50 +186,30 @@ def render_controls() -> None:
 
 
 def render_live_session() -> None:
-    video_slot = st.empty()
-    status_slot = st.empty()
-    warning_slot = st.empty()
-
     if not st.session_state.running:
         st.caption("Webcam activates after Start Question is selected. Raw video is processed in memory only.")
         return
 
-    webcam = get_webcam()
-    analyzer = get_analyzer()
-    rendered_any_frame = False
+    ctx = webrtc_streamer(
+        key="karierly-interview-vision-webrtc",
+        mode=WebRtcMode.SENDRECV,
+        rtc_configuration=RTC_CONFIGURATION,
+        video_processor_factory=InterviewVideoProcessor,
+        media_stream_constraints={"video": True, "audio": False},
+        async_processing=True,
+        desired_playing_state=True,
+    )
 
-    # Process a small burst per Streamlit rerun. This avoids full-page flicker
-    # on every single frame while keeping the Stop button responsive enough.
-    for _ in range(3):
-        ok, frame, error = webcam.read()
-        if not ok:
-            st.session_state.capture_error = error
-            if st.session_state.last_frame_rgb is not None:
-                warning_slot.warning(error)
-                video_slot.image(st.session_state.last_frame_rgb, channels="RGB", use_column_width=True)
-            else:
-                warning_slot.error(error)
-            time.sleep(0.08)
-            continue
+    if ctx.video_processor is not None:
+        st.session_state.video_processor = ctx.video_processor
+        frame_results, last_status = ctx.video_processor.snapshot()
+        st.session_state.current_frame_results = frame_results
+        st.session_state.last_status = last_status
 
-        analyzed_frame, status = analyzer.analyze(frame)
-        frame_rgb = cv2.cvtColor(analyzed_frame, cv2.COLOR_BGR2RGB)
-        st.session_state.last_frame_rgb = frame_rgb
-        st.session_state.last_status = status
-        st.session_state.current_frame_results.append(status)
-        rendered_any_frame = True
-
-        warning_slot.empty()
-        video_slot.image(frame_rgb, channels="RGB", use_column_width=True)
-        with status_slot.container():
-            render_detection_panel(status)
-        time.sleep(0.05)
-
-    if not rendered_any_frame and st.session_state.last_status is not None:
-        with status_slot.container():
-            render_detection_panel(st.session_state.last_status)
-
-    st.rerun()
+    st.caption(
+        "Webcam stream uses WebRTC to avoid Streamlit image refresh flicker. "
+        "Detection boxes and labels are drawn directly on the video stream."
+    )
 
 
 def render_detection_panel(status: dict | None = None) -> None:
