@@ -35,14 +35,26 @@ class InterviewVideoProcessor(VideoProcessorBase):
         self.lock = threading.Lock()
         self.frame_results: list[dict] = []
         self.last_status: dict | None = None
+        self.frame_index = 0
+        self.object_detection_every_n_frames = 8
+        self.metric_sample_every_n_frames = 3
 
     def recv(self, frame: av.VideoFrame) -> av.VideoFrame:
         image = frame.to_ndarray(format="bgr24")
-        analyzed_frame, status = self.analyzer.analyze(image)
+        self.frame_index += 1
+
+        # YOLO object detection is the heavy part, so refresh it periodically.
+        # Gaze/face estimation still runs every frame so the rendered video
+        # remains visually consistent and does not alternate raw/annotated frames.
+        refresh_objects = self.frame_index % self.object_detection_every_n_frames == 0
+        analyzed_frame, status = self.analyzer.analyze(image, refresh_objects=refresh_objects)
 
         with self.lock:
+            status["analysis_frame_index"] = len(self.frame_results) + 1
+            status["video_frame_index"] = self.frame_index
             self.last_status = status
-            self.frame_results.append(status)
+            if self.frame_index % self.metric_sample_every_n_frames == 0:
+                self.frame_results.append(status)
 
         return av.VideoFrame.from_ndarray(analyzed_frame, format="bgr24")
 

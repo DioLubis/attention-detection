@@ -63,10 +63,21 @@ class FrameAnalyzer:
     def __init__(self) -> None:
         self.object_detector = ObjectDetector()
         self.gaze_estimator = GazeEstimator()
+        self.last_object_status = {
+            "person_count": 0,
+            "phone_detected": False,
+            "laptop_detected": False,
+            "book_detected": False,
+        }
 
-    def analyze(self, frame: np.ndarray) -> tuple[np.ndarray, dict]:
+    def analyze(self, frame: np.ndarray, refresh_objects: bool = True) -> tuple[np.ndarray, dict]:
         display = cv2.flip(frame, 1)
-        object_status = self.object_detector.detect(display)
+        if refresh_objects:
+            object_status = self.object_detector.detect(display)
+            self.last_object_status = object_status
+        else:
+            object_status = self.last_object_status
+
         gaze_status = self.gaze_estimator.estimate(display)
 
         person_count = object_status["person_count"]
@@ -88,6 +99,7 @@ class FrameAnalyzer:
             "book_detected": object_status["book_detected"],
             "multiple_persons": person_count > 1,
             "detector_mode": "yolo" if self.object_detector.available else "opencv_fallback",
+            "object_detection_refreshed": refresh_objects,
             "eyes_visible": gaze_status.get("eyes_visible", False),
         }
         _draw_status(display, status)

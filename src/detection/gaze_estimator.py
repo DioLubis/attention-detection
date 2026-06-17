@@ -9,12 +9,12 @@ import numpy as np
 @dataclass(frozen=True)
 class GazeConfig:
     face_center_tolerance: float = 0.18
-    head_left_threshold: float = -0.045
-    head_right_threshold: float = 0.045
-    iris_left_threshold: float = 0.42
-    iris_right_threshold: float = 0.58
-    iris_down_threshold: float = 0.64
-    head_down_threshold: float = 0.70
+    head_left_threshold: float = -0.030
+    head_right_threshold: float = 0.030
+    iris_left_threshold: float = 0.48
+    iris_right_threshold: float = 0.52
+    iris_down_threshold: float = 0.88
+    head_down_threshold: float = 0.80
 
 
 class GazeEstimator:
@@ -74,6 +74,12 @@ class GazeEstimator:
 
         face_centered = self._is_face_centered(min_x, max_x, width)
         gaze = self._estimate_gaze_from_landmarks(landmarks)
+        face_center_ratio = ((min_x + max_x) / 2) / max(width, 1)
+        if not (gaze["looking_left"] or gaze["looking_right"]):
+            if face_center_ratio < 0.42:
+                gaze["looking_left"] = True
+            elif face_center_ratio > 0.58:
+                gaze["looking_right"] = True
         # Horizontal gaze should win over down-gaze. Head turns often move the
         # nose vertically enough to look like "down" with a simple threshold.
         if gaze["looking_left"] or gaze["looking_right"]:
@@ -113,7 +119,8 @@ class GazeEstimator:
         chin = landmarks[152]
 
         face_center_x = (left_face.x + right_face.x) / 2
-        horizontal_offset = nose.x - face_center_x
+        face_width = max(abs(right_face.x - left_face.x), 0.001)
+        horizontal_offset = (nose.x - face_center_x) / face_width
         vertical_span = max(chin.y - forehead.y, 0.001)
         vertical_offset = (nose.y - forehead.y) / vertical_span
 
@@ -126,9 +133,19 @@ class GazeEstimator:
             looking_left = looking_left or iris_ratio < self.config.iris_left_threshold
             looking_right = looking_right or iris_ratio > self.config.iris_right_threshold
 
-        looking_down = vertical_offset >= self.config.head_down_threshold
-        if iris_vertical_ratio is not None:
-            looking_down = looking_down or iris_vertical_ratio >= self.config.iris_down_threshold
+        # For glasses users, iris landmarks can be noisy or partially hidden.
+        # The normalized nose offset gives a more stable head-yaw proxy.
+        if abs(horizontal_offset) >= 0.018:
+            looking_left = looking_left or horizontal_offset < 0
+            looking_right = looking_right or horizontal_offset > 0
+
+        # Down-gaze is intentionally conservative. Earlier versions used an OR
+        # rule and produced too many false positives during normal side gaze.
+        looking_down = (
+            iris_vertical_ratio is not None
+            and iris_vertical_ratio >= self.config.iris_down_threshold
+            and vertical_offset >= self.config.head_down_threshold
+        )
 
         return {
             "looking_left": looking_left,
@@ -180,9 +197,7 @@ class GazeEstimator:
         eye_status = self._estimate_eyes_with_haar(frame, x, y, w, h)
         looking_left = not face_centered and (x + w / 2) < width / 2
         looking_right = not face_centered and (x + w / 2) >= width / 2
-        looking_down = (not (looking_left or looking_right)) and (
-            eye_status["looking_down"] or (y + h) / max(height, 1) > 0.90
-        )
+        looking_down = (not (looking_left or looking_right)) and (y + h) / max(height, 1) > 0.94
         looking_at_camera = face_centered and eye_status["eyes_visible"] and not looking_down
         _draw_box(frame, x, y, x + w, y + h, "face fallback", (39, 174, 96))
         return {

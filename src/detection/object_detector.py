@@ -17,7 +17,7 @@ COCO_CLASS_IDS = {
 @dataclass(frozen=True)
 class ObjectDetectionConfig:
     model_name: str = "yolov8n.pt"
-    image_size: int = 640
+    image_size: int = 512
     confidence: float = 0.18
     phone_confidence: float = 0.12
 
@@ -88,8 +88,6 @@ class ObjectDetector:
         height, width = frame.shape[:2]
         crops = [
             (0, int(height * 0.35), width, height),
-            (0, int(height * 0.20), int(width * 0.42), height),
-            (int(width * 0.58), int(height * 0.20), width, height),
         ]
 
         for x1, y1, x2, y2 in crops:
