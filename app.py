@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 import av
 import streamlit as st
 from streamlit_webrtc import RTCConfiguration, VideoProcessorBase, WebRtcMode, webrtc_streamer
+from streamlit_webrtc.webrtc import SignallingTimeoutError
 
 from src.detection.webcam import FrameAnalyzer
 from src.processing.report_generator import (
@@ -31,7 +32,9 @@ class InterviewVideoProcessor(VideoProcessorBase):
     """
 
     def __init__(self) -> None:
-        self.analyzer = FrameAnalyzer()
+        # Keep initialization lightweight. Loading YOLO/MediaPipe here can make
+        # WebRTC signaling exceed its 10-second startup limit.
+        self.analyzer: FrameAnalyzer | None = None
         self.lock = threading.Lock()
         self.frame_results: list[dict] = []
         self.last_status: dict | None = None
@@ -42,6 +45,8 @@ class InterviewVideoProcessor(VideoProcessorBase):
     def recv(self, frame: av.VideoFrame) -> av.VideoFrame:
         image = frame.to_ndarray(format="bgr24")
         self.frame_index += 1
+        if self.analyzer is None:
+            self.analyzer = FrameAnalyzer()
 
         # YOLO object detection is the heavy part, so refresh it periodically.
         # Gaze/face estimation still runs every frame so the rendered video
@@ -202,15 +207,19 @@ def render_live_session() -> None:
         st.caption("Webcam activates after Start Question is selected. Raw video is processed in memory only.")
         return
 
-    ctx = webrtc_streamer(
-        key="karierly-interview-vision-webrtc",
-        mode=WebRtcMode.SENDRECV,
-        rtc_configuration=RTC_CONFIGURATION,
-        video_processor_factory=InterviewVideoProcessor,
-        media_stream_constraints={"video": True, "audio": False},
-        async_processing=True,
-        desired_playing_state=True,
-    )
+    try:
+        ctx = webrtc_streamer(
+            key="karierly-interview-vision-webrtc",
+            mode=WebRtcMode.SENDRECV,
+            rtc_configuration=RTC_CONFIGURATION,
+            video_processor_factory=InterviewVideoProcessor,
+            media_stream_constraints={"video": True, "audio": False},
+            async_processing=True,
+            desired_playing_state=True,
+        )
+    except SignallingTimeoutError:
+        st.warning("Webcam startup timed out. Refresh the page once, then click Start Question again.")
+        return
 
     if ctx.video_processor is not None:
         st.session_state.video_processor = ctx.video_processor
