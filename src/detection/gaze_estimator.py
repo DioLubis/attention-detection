@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import Counter, deque
 from dataclasses import dataclass
 
 import cv2
@@ -9,12 +10,16 @@ import numpy as np
 @dataclass(frozen=True)
 class GazeConfig:
     face_center_tolerance: float = 0.18
-    head_left_threshold: float = -0.030
-    head_right_threshold: float = 0.030
-    iris_left_threshold: float = 0.48
-    iris_right_threshold: float = 0.52
-    iris_down_threshold: float = 0.88
-    head_down_threshold: float = 0.80
+    head_left_threshold: float = -0.018
+    head_right_threshold: float = 0.018
+    iris_left_threshold: float = 0.47
+    iris_right_threshold: float = 0.53
+    iris_down_threshold: float = 0.76
+    head_down_threshold: float = 0.68
+    pupil_left_threshold: float = 0.46
+    pupil_right_threshold: float = 0.54
+    pupil_min_confidence: float = 0.20
+    smoothing_window: int = 5
 
 
 class GazeEstimator:
@@ -25,6 +30,7 @@ class GazeEstimator:
         self.face_mesh = self._load_face_mesh()
         self.face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
         self.eye_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_eye_tree_eyeglasses.xml")
+        self.direction_history: deque[str] = deque(maxlen=self.config.smoothing_window)
 
     def estimate(self, frame: np.ndarray) -> dict:
         if self.face_mesh is not None:
@@ -46,6 +52,7 @@ class GazeEstimator:
             return None
 
     def _empty_status(self) -> dict:
+        self.direction_history.clear()
         return {
             "face_visible": False,
             "face_centered": False,
@@ -56,6 +63,11 @@ class GazeEstimator:
             "looking_away": True,
             "face_count": 0,
             "eyes_visible": False,
+            "gaze_horizontal_score": 0.0,
+            "gaze_vertical_score": 0.0,
+            "raw_gaze_direction": "none",
+            "pupil_detected": False,
+            "pupil_horizontal_ratio": 0.5,
         }
 
     def _estimate_with_facemesh(self, frame: np.ndarray) -> dict:
@@ -73,20 +85,13 @@ class GazeEstimator:
         min_y, max_y = int(min(ys) * height), int(max(ys) * height)
 
         face_centered = self._is_face_centered(min_x, max_x, width)
-        gaze = self._estimate_gaze_from_landmarks(landmarks)
-        face_center_ratio = ((min_x + max_x) / 2) / max(width, 1)
-        if not (gaze["looking_left"] or gaze["looking_right"]):
-            if face_center_ratio < 0.42:
-                gaze["looking_left"] = True
-            elif face_center_ratio > 0.58:
-                gaze["looking_right"] = True
-        # Horizontal gaze should win over down-gaze. Head turns often move the
-        # nose vertically enough to look like "down" with a simple threshold.
-        if gaze["looking_left"] or gaze["looking_right"]:
-            gaze["looking_down"] = False
-        looking_at_camera = face_centered and not (
-            gaze["looking_left"] or gaze["looking_right"] or gaze["looking_down"]
-        )
+        gaze = self._estimate_gaze_from_landmarks(frame, landmarks)
+        raw_direction = self._raw_direction(gaze)
+        direction = self._smooth_direction(raw_direction)
+        gaze["looking_left"] = direction == "left"
+        gaze["looking_right"] = direction == "right"
+        gaze["looking_down"] = direction == "down"
+        looking_at_camera = direction == "center" and face_centered
 
         _draw_box(frame, min_x, min_y, max_x, max_y, "face", (39, 174, 96))
         cv2.putText(
@@ -109,41 +114,55 @@ class GazeEstimator:
             "looking_away": not looking_at_camera,
             "face_count": len(all_faces),
             "eyes_visible": True,
+            "gaze_horizontal_score": gaze["horizontal_score"],
+            "gaze_vertical_score": gaze["vertical_score"],
+            "raw_gaze_direction": raw_direction,
+            "pupil_detected": gaze["pupil_detected"],
+            "pupil_horizontal_ratio": gaze["pupil_horizontal_ratio"],
         }
 
-    def _estimate_gaze_from_landmarks(self, landmarks) -> dict:
+    def _estimate_gaze_from_landmarks(self, frame: np.ndarray, landmarks) -> dict:
         nose = landmarks[1]
-        left_face = landmarks[234]
-        right_face = landmarks[454]
+        left_eye_outer = landmarks[33]
+        right_eye_outer = landmarks[263]
         forehead = landmarks[10]
         chin = landmarks[152]
 
-        face_center_x = (left_face.x + right_face.x) / 2
-        face_width = max(abs(right_face.x - left_face.x), 0.001)
-        horizontal_offset = (nose.x - face_center_x) / face_width
+        eye_center_x = (left_eye_outer.x + right_eye_outer.x) / 2
+        eye_width = max(abs(right_eye_outer.x - left_eye_outer.x), 0.001)
+        horizontal_offset = (nose.x - eye_center_x) / eye_width
         vertical_span = max(chin.y - forehead.y, 0.001)
         vertical_offset = (nose.y - forehead.y) / vertical_span
 
         iris_ratio = self._average_iris_ratio(landmarks)
         iris_vertical_ratio = self._average_iris_vertical_ratio(landmarks)
-        looking_left = horizontal_offset < self.config.head_left_threshold
-        looking_right = horizontal_offset > self.config.head_right_threshold
+        pupil_ratio, pupil_confidence = self._average_dark_pupil_ratio(frame, landmarks)
+        iris_horizontal = 0.0 if iris_ratio is None else iris_ratio - 0.5
 
-        if iris_ratio is not None:
-            looking_left = looking_left or iris_ratio < self.config.iris_left_threshold
-            looking_right = looking_right or iris_ratio > self.config.iris_right_threshold
+        pupil_detected = pupil_ratio is not None and pupil_confidence >= self.config.pupil_min_confidence
+        if pupil_detected:
+            # Direct dark-pupil movement is the primary signal. This allows eye
+            # gaze changes to register even while the head remains centered.
+            pupil_horizontal = pupil_ratio - 0.5
+            horizontal_score = (pupil_horizontal * 0.72) + (iris_horizontal * 0.18) + (horizontal_offset * 0.10)
+            looking_left = pupil_ratio < self.config.pupil_left_threshold
+            looking_right = pupil_ratio > self.config.pupil_right_threshold
+        else:
+            # Glasses reflections may hide the pupil. Fall back to iris
+            # landmarks and head yaw instead of returning a neutral result.
+            horizontal_score = (horizontal_offset * 0.65) + (iris_horizontal * 0.35)
+            looking_left = horizontal_score < self.config.head_left_threshold or (
+                iris_ratio is not None and iris_ratio < self.config.iris_left_threshold
+            )
+            looking_right = horizontal_score > self.config.head_right_threshold or (
+                iris_ratio is not None and iris_ratio > self.config.iris_right_threshold
+            )
 
-        # For glasses users, iris landmarks can be noisy or partially hidden.
-        # The normalized nose offset gives a more stable head-yaw proxy.
-        if abs(horizontal_offset) >= 0.018:
-            looking_left = looking_left or horizontal_offset < 0
-            looking_right = looking_right or horizontal_offset > 0
-
-        # Down-gaze is intentionally conservative. Earlier versions used an OR
-        # rule and produced too many false positives during normal side gaze.
+        vertical_score = iris_vertical_ratio if iris_vertical_ratio is not None else 0.5
         looking_down = (
-            iris_vertical_ratio is not None
-            and iris_vertical_ratio >= self.config.iris_down_threshold
+            not (looking_left or looking_right)
+            and iris_vertical_ratio is not None
+            and vertical_score >= self.config.iris_down_threshold
             and vertical_offset >= self.config.head_down_threshold
         )
 
@@ -151,7 +170,140 @@ class GazeEstimator:
             "looking_left": looking_left,
             "looking_right": looking_right,
             "looking_down": looking_down,
+            "horizontal_score": horizontal_score,
+            "vertical_score": vertical_score,
+            "pupil_detected": pupil_detected,
+            "pupil_horizontal_ratio": pupil_ratio if pupil_ratio is not None else 0.5,
         }
+
+    def _average_dark_pupil_ratio(self, frame: np.ndarray, landmarks) -> tuple[float | None, float]:
+        height, width = frame.shape[:2]
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        eye_specs = (
+            ((33, 160, 158, 133, 153, 144), 33, 133),
+            ((362, 385, 387, 263, 373, 380), 362, 263),
+        )
+
+        ratios = []
+        confidences = []
+        for polygon_indices, corner_a, corner_b in eye_specs:
+            result = self._dark_pupil_ratio_for_eye(
+                frame,
+                gray,
+                landmarks,
+                polygon_indices,
+                corner_a,
+                corner_b,
+                width,
+                height,
+            )
+            if result is not None:
+                ratio, confidence = result
+                ratios.append(ratio)
+                confidences.append(confidence)
+
+        if not ratios:
+            return None, 0.0
+        return float(np.mean(ratios)), float(np.mean(confidences))
+
+    def _dark_pupil_ratio_for_eye(
+        self,
+        frame: np.ndarray,
+        gray: np.ndarray,
+        landmarks,
+        polygon_indices: tuple[int, ...],
+        corner_a: int,
+        corner_b: int,
+        width: int,
+        height: int,
+    ) -> tuple[float, float] | None:
+        points = np.array(
+            [[int(landmarks[index].x * width), int(landmarks[index].y * height)] for index in polygon_indices],
+            dtype=np.int32,
+        )
+        x, y, w, h = cv2.boundingRect(points)
+        if w < 12 or h < 6:
+            return None
+
+        x1, y1 = max(x, 0), max(y, 0)
+        x2, y2 = min(x + w, width), min(y + h, height)
+        roi = gray[y1:y2, x1:x2]
+        if roi.size == 0:
+            return None
+
+        local_points = points - np.array([x1, y1])
+        mask = np.zeros_like(roi, dtype=np.uint8)
+        cv2.fillPoly(mask, [local_points], 255)
+        mask = cv2.erode(mask, np.ones((3, 3), np.uint8), iterations=1)
+
+        valid_pixels = roi[mask > 0]
+        if valid_pixels.size < 20:
+            return None
+
+        blurred = cv2.GaussianBlur(roi, (3, 3), 0)
+        dark_threshold = min(float(np.percentile(valid_pixels, 24)), float(np.mean(valid_pixels) - 8))
+        dark_mask = np.zeros_like(mask)
+        dark_mask[(blurred <= dark_threshold) & (mask > 0)] = 255
+        dark_mask = cv2.morphologyEx(dark_mask, cv2.MORPH_OPEN, np.ones((2, 2), np.uint8))
+
+        contours, _ = cv2.findContours(dark_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if not contours:
+            return None
+
+        eye_area = max(cv2.countNonZero(mask), 1)
+        candidates = []
+        for contour in contours:
+            area = cv2.contourArea(contour)
+            if area < 2 or area > eye_area * 0.45:
+                continue
+            moments = cv2.moments(contour)
+            if moments["m00"] == 0:
+                continue
+            cx = moments["m10"] / moments["m00"]
+            cy = moments["m01"] / moments["m00"]
+            vertical_center_score = 1.0 - min(abs(cy - roi.shape[0] / 2) / max(roi.shape[0] / 2, 1), 1.0)
+            candidates.append((area * (0.5 + vertical_center_score), cx, cy, area))
+
+        if not candidates:
+            return None
+
+        _, pupil_x, pupil_y, pupil_area = max(candidates, key=lambda item: item[0])
+        global_x = x1 + pupil_x
+        global_y = y1 + pupil_y
+        corner_x_a = landmarks[corner_a].x * width
+        corner_x_b = landmarks[corner_b].x * width
+        eye_min = min(corner_x_a, corner_x_b)
+        eye_max = max(corner_x_a, corner_x_b)
+        ratio = float(np.clip((global_x - eye_min) / max(eye_max - eye_min, 1.0), 0.0, 1.0))
+
+        contrast = max(float(np.mean(valid_pixels) - dark_threshold), 0.0)
+        area_ratio = pupil_area / eye_area
+        confidence = float(np.clip((contrast / 35.0) * 0.6 + min(area_ratio / 0.12, 1.0) * 0.4, 0.0, 1.0))
+        cv2.circle(frame, (int(global_x), int(global_y)), 3, (0, 255, 255), -1)
+        return ratio, confidence
+
+    def _raw_direction(self, gaze: dict) -> str:
+        if gaze["looking_left"]:
+            return "left"
+        if gaze["looking_right"]:
+            return "right"
+        if gaze["looking_down"]:
+            return "down"
+        return "center"
+
+    def _smooth_direction(self, direction: str) -> str:
+        self.direction_history.append(direction)
+        counts = Counter(self.direction_history)
+
+        # Two matching frames are enough for left/right responsiveness, while
+        # down requires three frames to avoid accidental downward classification.
+        if counts["left"] >= 2:
+            return "left"
+        if counts["right"] >= 2:
+            return "right"
+        if counts["down"] >= 3:
+            return "down"
+        return "center"
 
     def _average_iris_ratio(self, landmarks) -> float | None:
         try:

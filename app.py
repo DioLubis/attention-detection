@@ -275,6 +275,13 @@ def render_detection_panel(status: dict | None = None) -> None:
     gaze_cols[2].caption(f"Looking left/right: {'left' if status.get('looking_left') else 'right' if status.get('looking_right') else 'no'}")
     gaze_cols[3].caption(f"Looking down: {'yes' if status.get('looking_down') else 'no'}")
     st.caption(
+        f"Gaze signal: horizontal {status.get('gaze_horizontal_score', 0.0):.3f}, "
+        f"vertical {status.get('gaze_vertical_score', 0.0):.3f}, "
+        f"pupil ratio {status.get('pupil_horizontal_ratio', 0.5):.3f}, "
+        f"pupil detected {'yes' if status.get('pupil_detected') else 'no'}, "
+        f"raw direction {status.get('raw_gaze_direction', 'unknown')}."
+    )
+    st.caption(
         "Detector mode: "
         f"{status.get('detector_mode', 'unknown')}. "
         "YOLO/MediaPipe memberi hasil terbaik; OpenCV fallback hanya estimasi sederhana."

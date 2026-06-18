@@ -101,6 +101,11 @@ class FrameAnalyzer:
             "detector_mode": "yolo" if self.object_detector.available else "opencv_fallback",
             "object_detection_refreshed": refresh_objects,
             "eyes_visible": gaze_status.get("eyes_visible", False),
+            "gaze_horizontal_score": gaze_status.get("gaze_horizontal_score", 0.0),
+            "gaze_vertical_score": gaze_status.get("gaze_vertical_score", 0.0),
+            "raw_gaze_direction": gaze_status.get("raw_gaze_direction", "unknown"),
+            "pupil_detected": gaze_status.get("pupil_detected", False),
+            "pupil_horizontal_ratio": gaze_status.get("pupil_horizontal_ratio", 0.5),
         }
         _draw_status(display, status)
         return display, status
